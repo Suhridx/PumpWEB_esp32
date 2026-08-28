@@ -68,6 +68,9 @@ public:
     // Processes all waiting packets in the queue (Called from Main Loop)
     bool pop_packet(PicoPacket& out_packet);
 
+    // Drains the TX queue and physically sends data over UART
+    void process_tx_queue();
+
     // Public instance pointer so static callbacks can access it directly
     static PicoHandler* instance;
 
@@ -96,6 +99,9 @@ private:
     // --- Ring Buffer Variables ---
     static constexpr uint8_t QUEUE_SIZE = 5; // Can hold 5 packets at once
     PicoPacket rx_queue[QUEUE_SIZE];
+    QueueHandle_t tx_queue;
+
+    // NEW: The actual hardware write function (hidden from the rest of the system)
 
     // Volatile is critical here so the compiler knows these change inside an ISR
     volatile uint8_t queue_head = 0; // Where the ISR writes
@@ -103,4 +109,6 @@ private:
 
     // Helper to calculate data integrity
     uint16_t calculate_crc(uint8_t msg_type, uint16_t length, const uint8_t* payload);
+
+    void physical_send_packet(uint8_t msg_type, const uint8_t* payload, uint16_t length);
 };

@@ -8,33 +8,66 @@ PicoHandler::PicoHandler(UARTController& uart_ref)
     : uart(uart_ref), rx_state(RXState::WAIT_SYNC1) {
     // Store the active instance so static callbacks can find it
     instance = this;
+
+    tx_queue = xQueueCreate(10, sizeof(PicoPacket));
 }
 
 void PicoHandler::send_packet(uint8_t msg_type, const uint8_t* payload, uint16_t length) {
     if(length > PicoProtocol::MAX_PAYLOAD_SIZE)
         return; // Prevent buffer overflow
 
+    PicoPacket tx_packet;
+    tx_packet.msg_type = msg_type;
+    tx_packet.length = length;
+
+    if(length > 0 && payload != nullptr) {
+        memcpy(tx_packet.payload, payload, length);
+    }
+
+    // Auto-detect if we are inside the UART hardware interrupt (ISR)
+    if(xPortInIsrContext()) {
+        BaseType_t high_task_woken = pdFALSE;
+        // ISR-Safe queue push
+        xQueueSendFromISR(tx_queue, &tx_packet, &high_task_woken);
+    }
+    else {
+        // Normal Task queue push (Wait max 10 ticks if queue is temporarily full)
+        xQueueSend(tx_queue, &tx_packet, 10);
+    }
+
+
+}
+
+void PicoHandler::physical_send_packet(uint8_t msg_type, const uint8_t* payload, uint16_t length) {
     uint16_t crc = calculate_crc(msg_type, length, payload);
 
-    // 1. Send Header
     uint8_t header[5];
     header[0] = PicoProtocol::SYNC1;
     header[1] = PicoProtocol::SYNC2;
     header[2] = msg_type;
-    header[3] = length & 0xFF;        // Little Endian Length LSB
-    header[4] = (length >> 8) & 0xFF; // Little Endian Length MSB
+    header[3] = length & 0xFF;
+    header[4] = (length >> 8) & 0xFF;
     uart.send_bytes(header, 5);
 
-    // 2. Send Payload
     if(length > 0 && payload != nullptr) {
         uart.send_bytes(payload, length);
     }
 
-    // 3. Send CRC
     uint8_t crc_buf[2];
     crc_buf[0] = crc & 0xFF;
     crc_buf[1] = (crc >> 8) & 0xFF;
     uart.send_bytes(crc_buf, 2);
+}
+
+void PicoHandler::process_tx_queue() {
+    PicoPacket tx_packet;
+
+    // Attempt to pop a packet from the queue. 
+    // 0 = Do not block! If empty, immediately return pdFALSE and move on.
+    if(xQueueReceive(tx_queue, &tx_packet, 0) == pdTRUE) {
+        // A packet was waiting! Physically send it.
+        physical_send_packet(tx_packet.msg_type, tx_packet.payload, tx_packet.length);
+    }
 }
 
 void PicoHandler::send_ping() {

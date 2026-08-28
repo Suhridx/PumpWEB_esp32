@@ -138,6 +138,7 @@ void loop() {
     process_pico_packet(packet, pico_handler);
   }
 
+  pico_handler.process_tx_queue();
 }
 
 
