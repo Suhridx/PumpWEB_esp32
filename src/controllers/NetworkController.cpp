@@ -1,7 +1,11 @@
 #include "controllers/NetworkController.hpp"
-#include "configs/FileManager.hpp" // Inject our new Static File Manager
-#include "DataConstants.h"         // Shared hw_status word, read by the LED panel and the Pico sync
+#include "util/FlashFileManager.hpp" // Config storage now lives on the external SPI flash
+#include "DataConstants.h"           // Shared hw_status word, read by the LED panel and the Pico sync
 #include "Log.h"
+
+// Defined in main.cpp, and mounted in boot_sequence() before this controller starts, so
+// the config read below always runs against a live file system.
+extern FlashFileManager flash_fs;
 
 constexpr const char* WIFI_CONFIG_FILE = "/wifiConfig.json";
 constexpr const char* DEFAULT_WIFI_JSON = R"({
@@ -50,7 +54,7 @@ void NetworkController::connect_to(const char* ssid, const char* password) {
 
 bool NetworkController::load_config() {
     // 1. The Magic One-Liner: Reads the file OR creates it with our default JSON template
-    String json_data = FileManager::read_or_default(WIFI_CONFIG_FILE, DEFAULT_WIFI_JSON);
+    String json_data = flash_fs.read_or_default(WIFI_CONFIG_FILE, DEFAULT_WIFI_JSON);
 
     if(json_data == "") return false;
 
@@ -103,7 +107,7 @@ bool NetworkController::save_config(const char* ssid, const char* password) {
     serializeJson(doc, output_json);
 
     // 4. Let the FileManager handle the disk write
-    if(!FileManager::write_file(WIFI_CONFIG_FILE, output_json.c_str())) {
+    if(!flash_fs.write_file(WIFI_CONFIG_FILE, output_json.c_str())) {
         LOGLN("[WIFI-ERR] Failed to save updated config.");
         return false;
     }

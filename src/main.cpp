@@ -2,7 +2,6 @@
 #include "SystemConstants.h"
 #include "controllers/UARTController.hpp"
 #include "hardwares/PicoHandler.hpp"
-#include <configs/FileManager.hpp>
 #include "controllers/NetworkController.hpp"
 #include <hardwares/MQTTHandler.hpp>
 #include "controllers/SPIController.hpp"
@@ -104,8 +103,6 @@ void boot_sequence() {
   // background task exists, so there is no second writer to race against yet.
   hw_status.all = 0;
   memory_sync_status.all = 0;
-
-  FileManager::begin();
 
   spi_bus.begin();
   flash.begin();

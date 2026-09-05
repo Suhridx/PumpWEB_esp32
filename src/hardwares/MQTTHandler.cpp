@@ -1,5 +1,5 @@
 #include "hardwares/MQTTHandler.hpp"
-#include "configs/FileManager.hpp" // Utilizing your LittleFS static file manager
+#include "util/FlashFileManager.hpp" // Config storage now lives on the external SPI flash
 #include <SystemConstants.h>
 #include "DataConstants.h"
 #include "hardwares/WS2812Handler.hpp"
@@ -8,6 +8,9 @@
 // Defined in main.cpp. network_blink() only raises a flag for update_leds() to act on
 // later, so the broker task on core 0 can call it directly.
 extern WS2812Handler status_leds;
+
+// Also defined in main.cpp, and mounted before begin() runs.
+extern FlashFileManager flash_fs;
 
 
 constexpr const char* MQTT_CONFIG_FILE = "/mqttConfig.json";
@@ -58,7 +61,7 @@ void MQTTHandler::begin() {
 
 bool MQTTHandler::load_config_from_fs() {
     // 1. The Magic One-Liner: Reads the file OR creates it with our default JSON template
-    String json_data = FileManager::read_or_default(MQTT_CONFIG_FILE, DEFAULT_MQTT_JSON);
+    String json_data = flash_fs.read_or_default(MQTT_CONFIG_FILE, DEFAULT_MQTT_JSON);
 
     if(json_data == "") {
         LOGLN("[MQTT-ERR] Config file empty and default recreation failed.");
