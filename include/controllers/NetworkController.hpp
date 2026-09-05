@@ -50,4 +50,15 @@ private:
 
     bool load_config();
     static void wifi_background_task(void* parameter);
+
+    /**
+     * @brief Moves the state machine and mirrors the result into hw_status.
+     *
+     * Every transition goes through here so hw_status.bits.wifi_connected can never
+     * drift away from what the state machine believes the link is doing. CONNECTED is
+     * the only state that counts as an up link, every other one clears the bit.
+     *
+     * @param new_state The state to move into.
+     */
+    void set_state(WiFiState new_state);
 };

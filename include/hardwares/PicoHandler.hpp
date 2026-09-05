@@ -14,6 +14,7 @@ namespace PicoProtocol {
     constexpr uint8_t MSG_TYPE_LOG = 0x03;
     constexpr uint8_t MSG_TYPE_REQUEST = 0x04;
     constexpr uint8_t MSG_TYPE_HW_SYNC = 0x0D;
+    constexpr uint8_t MSG_TYPE_HW_SYNC_RESP = 0x0F;
     constexpr uint8_t MSG_TYPE_SENSOR = 0x05;
     constexpr uint8_t MSG_TYPE_SCHEDULE = 0x09;
 
@@ -21,6 +22,7 @@ namespace PicoProtocol {
 
     constexpr uint8_t MSG_TYPE_RUN_REPORT = 0x0C; // Cloud reporting
     constexpr uint8_t MSG_TYPE_ROUTINE_TIME = 0x0E; // Routine time update
+    constexpr uint8_t MSG_TYPE_OTA_REQUEST = 0x10;
 
     // The ultra-compact 8-byte payload received from the Pico
     struct __attribute__((packed)) PumpRunReport_t {
@@ -39,6 +41,11 @@ namespace PicoProtocol {
     constexpr uint8_t MSG_TYPE_PING = 0x06;
     constexpr uint8_t MSG_TYPE_ACK = 0x07;
     constexpr uint8_t MSG_TYPE_NACK = 0x08;
+
+    constexpr uint8_t TARGET_STATE = 0x01;
+    constexpr uint8_t TARGET_CONFIG = 0x02;
+    constexpr uint8_t TARGET_SCHEDULE = 0x09;
+    constexpr uint8_t TARGET_ALL_DATA = 0xFF;
 
     constexpr uint16_t MAX_PAYLOAD_SIZE = 256;
 } // namespace PicoProtocol

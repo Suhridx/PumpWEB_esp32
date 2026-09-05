@@ -1,5 +1,7 @@
 #include "controllers/NetworkController.hpp"
 #include "configs/FileManager.hpp" // Inject our new Static File Manager
+#include "DataConstants.h"         // Shared hw_status word, read by the LED panel and the Pico sync
+#include "Log.h"
 
 constexpr const char* WIFI_CONFIG_FILE = "/wifiConfig.json";
 constexpr const char* DEFAULT_WIFI_JSON = R"({
@@ -15,10 +17,10 @@ constexpr uint8_t MAX_RETRIES = 5;
 NetworkController::NetworkController() {}
 
 void NetworkController::begin() {
-    Serial.println("[WIFI] Initializing Robust Network Controller...");
+    LOGLN("[WIFI] Initializing Robust Network Controller...");
 
     if(!load_config()) {
-        Serial.println("[WIFI] No valid saved config found. Awaiting manual input.");
+        LOGLN("[WIFI] No valid saved config found. Awaiting manual input.");
     }
 
     WiFi.mode(WIFI_STA);
@@ -37,13 +39,13 @@ void NetworkController::begin() {
 }
 
 void NetworkController::connect_to(const char* ssid, const char* password) {
-    Serial.printf("[WIFI] Manual override. Connecting to: %s\n", ssid);
+    LOGF("[WIFI] Manual override. Connecting to: %s\n", ssid);
     current_ssid = ssid;
     current_password = password;
     retry_count = 0;
 
     WiFi.disconnect();
-    current_state = WiFiState::DISCONNECTED;
+    set_state(WiFiState::DISCONNECTED);
 }
 
 bool NetworkController::load_config() {
@@ -57,7 +59,7 @@ bool NetworkController::load_config() {
     DeserializationError error = deserializeJson(doc, json_data);
 
     if(error) {
-        Serial.printf("[WIFI-ERR] Failed to parse wificonfig.json: %s\n", error.c_str());
+        LOGF("[WIFI-ERR] Failed to parse wificonfig.json: %s\n", error.c_str());
         return false;
     }
 
@@ -74,7 +76,7 @@ bool NetworkController::load_config() {
     if(saved_networks.size() > 0) {
         current_ssid = saved_networks[0].ssid;
         current_password = saved_networks[0].password;
-        Serial.printf("[WIFI] Loaded %d saved networks. Primary: %s\n", saved_networks.size(), current_ssid.c_str());
+        LOGF("[WIFI] Loaded %d saved networks. Primary: %s\n", saved_networks.size(), current_ssid.c_str());
         return true;
     }
 
@@ -102,11 +104,11 @@ bool NetworkController::save_config(const char* ssid, const char* password) {
 
     // 4. Let the FileManager handle the disk write
     if(!FileManager::write_file(WIFI_CONFIG_FILE, output_json.c_str())) {
-        Serial.println("[WIFI-ERR] Failed to save updated config.");
+        LOGLN("[WIFI-ERR] Failed to save updated config.");
         return false;
     }
 
-    Serial.println("[WIFI] Successfully saved new network config.");
+    LOGLN("[WIFI] Successfully saved new network config.");
 
     // Trigger immediate connection attempt
     connect_to(ssid, password);
@@ -136,7 +138,22 @@ bool NetworkController::is_connected() {
 
 void NetworkController::disconnect() {
     WiFi.disconnect();
-    current_state = WiFiState::DISCONNECTED;
+    set_state(WiFiState::DISCONNECTED);
+}
+
+void NetworkController::set_state(WiFiState new_state) {
+    current_state = new_state;
+
+    // The status panel and the Pico HW_SYNC handshake both read this bit, so it moves
+    // in lock step with the state machine instead of being polled. CONNECTED is the
+    // only state in which the station actually holds an IP address.
+    //
+    // Guarded because this task runs on core 0 while the main loop writes neighbouring
+    // bits of the same byte from core 1.
+    {
+        HwStatusLock lock;
+        hw_status.bits.wifi_connected = (new_state == WiFiState::CONNECTED) ? 1 : 0;
+    }
 }
 
 // ============================================================================
@@ -150,31 +167,31 @@ void NetworkController::wifi_background_task(void* parameter) {
 
             case WiFiState::DISCONNECTED:
                 if(instance->current_ssid != "") {
-                    Serial.printf("[WIFI] Attempting connection to %s (Try %d/%d)\n",
+                    LOGF("[WIFI] Attempting connection to %s (Try %d/%d)\n",
                         instance->current_ssid.c_str(), instance->retry_count + 1, MAX_RETRIES);
                     WiFi.begin(instance->current_ssid.c_str(), instance->current_password.c_str());
-                    instance->current_state = WiFiState::CONNECTING;
+                    instance->set_state(WiFiState::CONNECTING);
                 }
                 else {
-                    instance->current_state = WiFiState::WAITING_FOR_NETWORK;
+                    instance->set_state(WiFiState::WAITING_FOR_NETWORK);
                 }
                 break;
 
             case WiFiState::CONNECTING:
                 if(WiFi.status() == WL_CONNECTED) {
-                    Serial.printf("[WIFI] Connected! IP Address: %s\n", WiFi.localIP().toString().c_str());
+                    LOGF("[WIFI] Connected! IP Address: %s\n", WiFi.localIP().toString().c_str());
                     instance->retry_count = 0;
-                    instance->current_state = WiFiState::CONNECTED;
+                    instance->set_state(WiFiState::CONNECTED);
                 }
                 else if(WiFi.status() == WL_CONNECT_FAILED || WiFi.status() == WL_NO_SSID_AVAIL || WiFi.status() == WL_DISCONNECTED) {
                     instance->retry_count++;
 
                     if(instance->retry_count >= MAX_RETRIES) {
-                        Serial.println("[WIFI-ERR] Max retries reached. Switching to network scan mode.");
-                        instance->current_state = WiFiState::SCANNING_FOR_KNOWN;
+                        LOGLN("[WIFI-ERR] Max retries reached. Switching to network scan mode.");
+                        instance->set_state(WiFiState::SCANNING_FOR_KNOWN);
                     }
                     else {
-                        instance->current_state = WiFiState::DISCONNECTED;
+                        instance->set_state(WiFiState::DISCONNECTED);
                         vTaskDelay(5000 / portTICK_PERIOD_MS);
                     }
                 }
@@ -182,13 +199,13 @@ void NetworkController::wifi_background_task(void* parameter) {
 
             case WiFiState::CONNECTED:
                 if(WiFi.status() != WL_CONNECTED) {
-                    Serial.println("[WIFI] Connection lost!");
-                    instance->current_state = WiFiState::DISCONNECTED;
+                    LOGLN("[WIFI] Connection lost!");
+                    instance->set_state(WiFiState::DISCONNECTED);
                 }
                 break;
 
             case WiFiState::SCANNING_FOR_KNOWN: {
-                Serial.println("[WIFI] Scanning airwaves for known networks...");
+                LOGLN("[WIFI] Scanning airwaves for known networks...");
                 int n = WiFi.scanNetworks();
                 bool found_network = false;
 
@@ -197,11 +214,11 @@ void NetworkController::wifi_background_task(void* parameter) {
 
                     for(const auto& cred : instance->saved_networks) {
                         if(scanned_ssid == cred.ssid) {
-                            Serial.printf("[WIFI] Found backup network: %s\n", cred.ssid.c_str());
+                            LOGF("[WIFI] Found backup network: %s\n", cred.ssid.c_str());
                             instance->current_ssid = cred.ssid;
                             instance->current_password = cred.password;
                             instance->retry_count = 0;
-                            instance->current_state = WiFiState::DISCONNECTED;
+                            instance->set_state(WiFiState::DISCONNECTED);
                             found_network = true;
                             break;
                         }
@@ -210,16 +227,16 @@ void NetworkController::wifi_background_task(void* parameter) {
                 }
 
                 if(!found_network) {
-                    Serial.println("[WIFI] No known networks found in range. Going to sleep.");
-                    instance->current_state = WiFiState::WAITING_FOR_NETWORK;
+                    LOGLN("[WIFI] No known networks found in range. Going to sleep.");
+                    instance->set_state(WiFiState::WAITING_FOR_NETWORK);
                 }
                 break;
             }
 
             case WiFiState::WAITING_FOR_NETWORK:
                 vTaskDelay(30000 / portTICK_PERIOD_MS);
-                Serial.println("[WIFI] Waking up to check for networks again...");
-                instance->current_state = WiFiState::SCANNING_FOR_KNOWN;
+                LOGLN("[WIFI] Waking up to check for networks again...");
+                instance->set_state(WiFiState::SCANNING_FOR_KNOWN);
                 break;
         }
 

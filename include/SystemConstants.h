@@ -53,10 +53,30 @@ namespace UARTConfig {
     constexpr uint8_t UART2_TX_PIN = GPIOConfig::UART2_TX_PIN;
     constexpr uint8_t UART2_RX_PIN = GPIOConfig::UART2_RX_PIN;
 
-    // Water Level Sensor (Software Serial)
+    // HC-12 Radio Link to the Water Level Sensors (Software Serial)
+    // All three hardware UARTs are taken (0 debug, 1 Pico, 2 Nextion), so the radio
+    // is bit-banged. These used to alias the UART2 pins, which are the Nextion HMI
+    // lines, so they now point at the radio pair the GPIO map already reserved.
     constexpr uint32_t SENSOR_BAUD = 9600;
-    constexpr uint8_t SENSOR_TX_PIN = GPIOConfig::UART2_TX_PIN; // Reuse UART2 TX for sensor output
-    constexpr uint8_t SENSOR_RX_PIN = GPIOConfig::UART2_RX_PIN;
+    constexpr uint8_t SENSOR_TX_PIN = GPIOConfig::HC12_TX_PIN; // ESP32 TX -> HC-12 RX
+    constexpr uint8_t SENSOR_RX_PIN = GPIOConfig::HC12_RX_PIN; // ESP32 RX <- HC-12 TX
+}
+
+namespace SPIConfig {
+    // --- Bus Pins (shared by every device hanging off the bus) ---
+    constexpr uint8_t SCK_PIN = GPIOConfig::SPI_SCK_PIN;
+    constexpr uint8_t MOSI_PIN = GPIOConfig::SPI_MOSI_PIN;
+    constexpr uint8_t MISO_PIN = GPIOConfig::SPI_MISO_PIN;
+
+    // --- Chip Select (one per device on the bus) ---
+    constexpr uint8_t FLASH_CS_PIN = GPIOConfig::SPI_CS_PIN;
+
+    // --- Clock Speeds ---
+    constexpr uint32_t DEFAULT_CLOCK_HZ = 40 * 1000 * 1000; // 40 MHz
+    constexpr uint32_t SAFE_CLOCK_HZ = 1 * 1000 * 1000;     // 1 MHz for long wires / debugging
+
+    // Device geometry and timeouts are NOT here on purpose. They belong to the
+    // chip driver in hardwares/, so this bus layer stays device agnostic.
 }
 
 namespace BAUD {
@@ -139,5 +159,5 @@ namespace MQTTConstants {
     // --- Publish Topics (Data going OUT to Cloud) ---
     constexpr const char* PUB_TELEMETRY = "pump/state/telemetry";
     constexpr const char* PUB_LOGS = "pump/state/logs";
-    constexpr const char* PUB_STATUS = "pump/state/status";
+    constexpr const char* PUB_STATUS = "pump/state/sync";
 }

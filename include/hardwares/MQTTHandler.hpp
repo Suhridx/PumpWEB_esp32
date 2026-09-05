@@ -9,6 +9,8 @@
 #include <functional>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/queue.h>
+#include <cstdint>
 
 // ==============================================================================
 // 2. Explicit MQTT Connection Status Variables
@@ -19,6 +21,15 @@ enum class MQTTState {
     CONNECTED,
     CONNECTION_LOST,
     AUTH_FAILED
+};
+
+// Define the lightweight MQTT actions
+enum class MqttAction_t : uint8_t {
+    NONE = 0,
+    PUB_CONFIG,
+    PUB_SCHEDULE,
+    ERR_CONFIG_NACK,
+    ERR_SCHEDULE_NACK
 };
 
 // ==============================================================================
@@ -63,9 +74,31 @@ public:
     // Get explicit current state for your UI or status LEDs
     MQTTState get_state();
 
+
+
+    // Core 1 (Hardware Loop) pushes to the queue
+    void enqueue_action(MqttAction_t action);
+
+    // Core 0 (Network Loop) drains the queue and publishes
+    void process_mqtt_queue();
+
 private:
     MQTTConfig config;
     MQTTState current_state = MQTTState::DISCONNECTED;
+
+    QueueHandle_t event_queue;
+    void publish_sync_event(const char* target, const char* status);
+
+    /**
+     * @brief Moves the state machine and mirrors the result into hw_status.
+     *
+     * Every transition goes through here so hw_status.bits.mqtt_connected can never
+     * drift away from the state machine. CONNECTED is the only state with a live
+     * broker session, every other one clears the bit.
+     *
+     * @param new_state The state to move into.
+     */
+    void set_state(MQTTState new_state);
 
     WiFiClientSecure wifi_client;
     PubSubClient mqtt_client;
