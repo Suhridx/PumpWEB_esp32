@@ -16,9 +16,9 @@ namespace StatusLed {
     constexpr uint8_t IDX_RELAY = 2;    // Relay driver
     constexpr uint8_t IDX_BRIDGE = 3;   // UART link to the Pico
     constexpr uint8_t IDX_NETWORK = 4;  // WiFi and MQTT together
-    constexpr uint8_t IDX_SPARE_1 = 5;  // Unassigned, stays dark
-    constexpr uint8_t IDX_ACTIVITY = 6; // Driven only by blue_blink()
-    constexpr uint8_t IDX_SPARE_2 = 7;  // Unassigned, stays dark
+    constexpr uint8_t IDX_OTA = 5;      // OTA update activity, pulse only, no fault state
+    constexpr uint8_t IDX_SPARE = 6;    // Unassigned, stays dark
+    constexpr uint8_t IDX_ACTIVITY = 7; // Driven only by blue_blink()
 
     // --- Colors, packed 0xRRGGBB. Output is scaled by the panel brightness setting. ---
     constexpr uint32_t COLOR_OFF = 0x000000;
@@ -132,6 +132,27 @@ public:
     void memory_blink(uint32_t color);
 
     /**
+     * @brief Pulses the sensor pixel blue once, to show a water level reading arriving.
+     *
+     * Same 80 ms one shot as the traffic pulses. The pixel keeps its own red fault blink
+     * for the case where the sensors are not reporting; this pulse rides over it, so a
+     * reading is visible even while the pair is still considered unhealthy.
+     *
+     * Not yet called from anywhere: it waits on the sensor decode path.
+     */
+    void sensor_blink();
+
+    /**
+     * @brief Pulses the OTA pixel green once, to show OTA update activity.
+     *
+     * That pixel has no fault state of its own and is otherwise dark, so this is the only
+     * thing that ever lights it. Fixed green, same 80 ms as the traffic pulses.
+     *
+     * Not yet called from anywhere: it waits on the OTA mode implementation.
+     */
+    void ota_blink();
+
+    /**
      * @brief Scales the whole panel, 0 to 255.
      */
     void set_brightness(uint8_t brightness);
@@ -178,6 +199,8 @@ private:
         PULSE_BRIDGE,  // White, on any packet from the Pico
         PULSE_NETWORK, // Yellow, on any message from the broker
         PULSE_MEMORY,  // Green or red, on a config or schedule transaction result
+        PULSE_SENSORS, // Blue, on a water level sensor reading
+        PULSE_OTA,     // Green, on OTA update activity
         PULSE_COUNT
     };
 

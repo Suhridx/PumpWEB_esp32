@@ -8,6 +8,8 @@
 #include "controllers/SPIController.hpp"
 #include "hardwares/W25Q64Handler.hpp"
 #include "hardwares/WS2812Handler.hpp"
+#include "util/FlashFileManager.hpp"
+#include "util/FlashLog.hpp"
 #include "DataConstants.h"
 #include "Log.h"
 
@@ -24,6 +26,26 @@ MQTTHandler mqtt;
 // SPI flash chain: raw bus -> W25Q64 chip driver
 SPIController spi_bus;
 W25Q64Handler flash(spi_bus);
+
+// ==================================================================
+// External flash layout, 2048 sectors of 4 KB
+// ==================================================================
+// The file system takes the bottom 5 MB and keeps its mirrored directory in sectors 0 and
+// 1, exactly where it already expects them. The two log rings take the tail. The asserts
+// below are the guard against the three regions ever drifting into each other.
+constexpr uint32_t FS_SECTOR_COUNT = 1280;  // 5 MB: html, Pico uf2, json configs
+constexpr uint32_t PICO_LOG_START = 1280;
+constexpr uint32_t PICO_LOG_SECTORS = 256;  // 1 MB
+constexpr uint32_t ESP_LOG_START = 1536;
+constexpr uint32_t ESP_LOG_SECTORS = 512;   // 2 MB
+
+static_assert(PICO_LOG_START == FS_SECTOR_COUNT, "Logs must start where the file system ends");
+static_assert(ESP_LOG_START == PICO_LOG_START + PICO_LOG_SECTORS, "Log regions must be adjacent");
+static_assert(ESP_LOG_START + ESP_LOG_SECTORS == W25Q64::SECTOR_COUNT, "Regions must tile the chip");
+
+FlashFileManager flash_fs(flash, FS_SECTOR_COUNT);
+FlashLog pico_log(flash, PICO_LOG_START, PICO_LOG_SECTORS);
+FlashLog esp_log(flash, ESP_LOG_START, ESP_LOG_SECTORS);
 
 // WS2812 status panel, mirrors hw_status
 WS2812Handler status_leds;
@@ -87,6 +109,9 @@ void boot_sequence() {
 
   spi_bus.begin();
   flash.begin();
+  flash_fs.begin();
+  pico_log.begin();
+  esp_log.begin();
 
   status_leds.begin();
 
@@ -114,17 +139,9 @@ void boot_sequence() {
 
 void system_setup() {
 
-  // The chip was brought up in boot_sequence, so this only records the outcome.
-  // The status word was already cleared at the top of boot_sequence, before any
-  // background task could have written to it.
-  //
-  // relay_ready is deliberately not set here. The Pico owns that field and it arrives
-  // through the HW_SYNC merge. flash_ready is ours, since the W25Q64 hangs off this
-  // side's SPI bus and no other device can observe it.
   const bool wifi_up = network_controller.is_connected();
   const bool mqtt_up = (mqtt.get_state() == MQTTState::CONNECTED);
   const bool flash_up = flash.is_detected();
-
   {
     HwStatusLock lock;
     hw_status.bits.wifi_connected = wifi_up ? 1 : 0;
@@ -133,8 +150,6 @@ void system_setup() {
   }
 
   // --- Phase 2: send the refreshed word ---
-
-  LOGF("[BOOT] SPI Flash: %s\n", flash_up ? "READY" : "NOT DETECTED");
 
   LOGLN("[BOOT] Pinging Pico and waiting for response...");
   pico_handler.send_ping();
@@ -145,9 +160,6 @@ void system_setup() {
 
   // Block for up to 5 seconds
   while(!ping_acked && (millis() - start_time) < 5000) {
-    // send_ping() only enqueues and loop() has not started, so nothing else is draining
-    // the TX queue. This pushes the PING onto the wire so the Pico has something to answer,
-    // and carries out whatever the handler below queues in reply.
     pico_handler.process_tx_queue();
 
     if(pico_handler.pop_packet(packet)) {
@@ -175,13 +187,7 @@ void system_setup() {
   pico_handler.send_packet(PicoProtocol::MSG_TYPE_HW_SYNC, (uint8_t*)&hw_status, sizeof(HardwareStatus_t));
   pico_handler.process_tx_queue();
 
-  // Settle the HW_SYNC round trip here rather than leaving it to loop(). The response is
-  // checked against the live status word, and WiFi and MQTT are still settling on core 0
-  // through boot, so the longer that round trip stays outstanding the more chance one of
-  // those bits moves underneath it and turns a good handshake into a NACK.
-  //
-  // packet and start_time are the ones declared for the PING wait above, reused rather
-  // than shadowed.
+
   start_time = millis();
   bool sync_done = false;
 
@@ -191,9 +197,7 @@ void system_setup() {
     pico_handler.process_tx_queue();
 
     if(pico_handler.pop_packet(packet)) {
-      // Routed through the normal handler so the verify, merge and ACK/NACK logic lives in
-      // exactly one place. Anything else arriving meanwhile, a LOG line or a PING of the
-      // Pico's own, is handled properly instead of being dropped on the floor.
+
       process_pico_packet(packet, pico_handler);
       sync_done = (packet.msg_type == PicoProtocol::MSG_TYPE_HW_SYNC_RESP);
     }
@@ -249,9 +253,7 @@ void loop() {
     LOGF("[BRIDGE] Silent for %lu ms. Marking bridge down.\n", millis() - last_pico_rx);
   }
 
-  // Refresh the ESP32 owned fields and push the shared struct on a fixed interval.
-  // Subtraction on unsigned millis stays correct across the 49 day rollover. Placed ahead
-  // of the drain below so the packet it queues goes out on this same pass.
+
   static uint32_t last_hw_sync = 0;
   if(millis() - last_hw_sync >= HW_SYNC_INTERVAL_MS) {
     last_hw_sync = millis();
@@ -259,14 +261,6 @@ void loop() {
   }
 
   pico_handler.process_tx_queue();
-
-  // Non-blocking. Repaints the panel only when the status word or a blink phase moves.
-  //
-  // Read deliberately unguarded. update_leds() loads status.all for its change check and
-  // then re-reads the individual bits in map_status(), so a core 0 write landing between
-  // those two loads can cache the new word while painting the old bits, skipping one
-  // repaint. Unlike the write race this is self correcting, since the next status change
-  // repaints from a consistent value. Snapshot it under HwStatusLock if that ever matters.
   status_leds.update_leds(hw_status);
 }
 
@@ -282,16 +276,10 @@ void loop() {
  */
 void trigger_hardware_sync() {
 
-  // --- Phase 1: check the fields this side owns ---
-  // All resolved before the lock is taken, since nothing but the status word writes
-  // themselves belongs inside a critical section.
+  // --- Phase 1: Check the fields this side owns ---
   const bool wifi_up = network_controller.is_connected();
-  // get_state() reads the enum the MQTT task maintains. is_connected() would reach into
-  // PubSubClient and its TLS client, which the task is concurrently driving on core 0,
-  // and that library is not safe to touch from two cores at once.
   const bool mqtt_up = (mqtt.get_state() == MQTTState::CONNECTED);
   const bool flash_up = flash.is_detected();
-
   {
     HwStatusLock lock;
     hw_status.bits.wifi_connected = wifi_up ? 1 : 0;
@@ -338,6 +326,9 @@ void process_pico_packet(const PicoPacket& packet, PicoHandler& pico_handler) {
       memcpy(log_buffer, packet.payload, packet.length);
       log_buffer[packet.length] = '\0';
       LOGF("[PICO LOG]: %s\n", log_buffer);
+
+      // Straight into the ring: one page program, no metadata rewrite, no allocation.
+      pico_log.append(packet.payload, packet.length);
       break;
     }
 
@@ -357,7 +348,12 @@ void process_pico_packet(const PicoPacket& packet, PicoHandler& pico_handler) {
       if(packet.length == sizeof(PicoProtocol::RoutinePayload_t)) {
         PicoProtocol::RoutinePayload_t time_data;
         memcpy(&time_data, packet.payload, sizeof(PicoProtocol::RoutinePayload_t));
-        LOGF("-> Pico Uptime: %d seconds\n", time_data.uptime_secs);
+        LOGF("-> Pico time: %u mins from midnight, up %lu seconds\n",
+          (unsigned)time_data.mins_from_midnight, (unsigned long)time_data.uptime_secs);
+
+        // The only real clock either side has. Stamped into every record from here on.
+        pico_log.set_time(time_data.mins_from_midnight);
+        esp_log.set_time(time_data.mins_from_midnight);
       }
       break;
     }
@@ -455,33 +451,16 @@ void process_pico_packet(const PicoPacket& packet, PicoHandler& pico_handler) {
       if(packet.length == 1) {
         uint8_t acked_msg = packet.payload[0];
         LOGF("[PICO] Hardware Confirmed Success for: 0x%02X\n", acked_msg);
-        // Config and schedule are the memory backed transactions, so their outcome is
-        // reported on the memory pixel. Other ACKs, a PING or a HW_SYNC_RESP, are not
-        // memory operations and leave it alone.
+
         if(acked_msg == PicoProtocol::MSG_TYPE_CONFIG ||
           acked_msg == PicoProtocol::MSG_TYPE_SCHEDULE) {
           status_leds.memory_blink(StatusLed::COLOR_GREEN);
         }
-
-        // Release the shadow copy lock that handle_settings_update() and
-        // handle_schedule_update() engage before sending. The Pico has accepted the write,
-        // so the shadow copy and the hardware agree again and the next cloud update may
-        // proceed.
-        //
-        // Without this the lock is never lifted on the success path, and every later update
-        // is dropped by the guard at the top of those handlers. The failure path escaped the
-        // same fate only by accident: its rollback REQUEST makes the Pico push the block
-        // back, and it is that inbound packet, not the NACK, which clears the flag.
         if(acked_msg == PicoProtocol::MSG_TYPE_CONFIG) {
           memory_sync_status.bits.config_synced = 1;
         }
         else if(acked_msg == PicoProtocol::MSG_TYPE_SCHEDULE) {
           memory_sync_status.bits.schedules_synced = 1;
-        }
-
-        // If Cloud changed settings, and Pico just ACK'd it, tell the Cloud!
-        if(acked_msg == PicoProtocol::MSG_TYPE_CONFIG) {
-          // publish_settings_to_cloud(); 
         }
       }
       break;

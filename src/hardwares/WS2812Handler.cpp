@@ -23,6 +23,14 @@ WS2812Handler::WS2812Handler(uint8_t data_pin, uint8_t led_count)
     pulses[PULSE_MEMORY].index = StatusLed::IDX_MEMORY;
     pulses[PULSE_MEMORY].duration = StatusLed::MEMORY_FLASH_MS;
     // The memory colour is set per call, since that slot reports an outcome not an event.
+
+    pulses[PULSE_SENSORS].index = StatusLed::IDX_SENSORS;
+    pulses[PULSE_SENSORS].duration = StatusLed::TRAFFIC_FLASH_MS;
+    pulses[PULSE_SENSORS].color = StatusLed::COLOR_BLUE;
+
+    pulses[PULSE_OTA].index = StatusLed::IDX_OTA;
+    pulses[PULSE_OTA].duration = StatusLed::TRAFFIC_FLASH_MS;
+    pulses[PULSE_OTA].color = StatusLed::COLOR_GREEN;
 }
 
 bool WS2812Handler::begin() {
@@ -190,6 +198,14 @@ void WS2812Handler::bridge_blink() {
 
 void WS2812Handler::network_blink() {
     trigger_pulse(PULSE_NETWORK);
+}
+
+void WS2812Handler::sensor_blink() {
+    trigger_pulse(PULSE_SENSORS);
+}
+
+void WS2812Handler::ota_blink() {
+    trigger_pulse(PULSE_OTA);
 }
 
 void WS2812Handler::memory_blink(uint32_t color) {
